@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import sqlite3 from 'sqlite3';
-const Database = sqlite3.Database;
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import Docker from 'dockerode';
@@ -18,59 +17,99 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const docker = new Docker();
 
-// Serve static frontend files
+// Serve static frontend files from dist folder
 const frontendPath = path.join(__dirname, '../../frontend/dist');
+console.log(`Frontend path: ${frontendPath}`);
+console.log(`Frontend exists: ${fs.existsSync(frontendPath)}`);
+
 if (fs.existsSync(frontendPath)) {
+  // Serve assets folder first (CSS, JS files)
+  app.use('/assets', express.static(path.join(frontendPath, 'assets')));
+  // Serve other static files
   app.use(express.static(frontendPath));
-  console.log(`Serving frontend from: ${frontendPath}`);
+  console.log(`✅ Serving frontend from: ${frontendPath}`);
 }
 
 const dataDir = path.join(process.cwd(), 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-const db = new Database(path.join(dataDir, 'deployments.db'));
+const db = new sqlite3.Database(path.join(dataDir, 'deployments.db'));
 
-// Database schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS deployments (
-    id TEXT PRIMARY KEY,
-    status TEXT NOT NULL,
-    git_url TEXT NOT NULL,
-    branch TEXT DEFAULT 'main',
-    project_type TEXT,
-    image_tag TEXT,
-    url TEXT,
-    port INTEGER,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    logs TEXT,
-    metadata TEXT,
-    env_vars TEXT,
-    domain TEXT
-  )
-`);
+// Initialize database tables
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS deployments (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      git_url TEXT NOT NULL,
+      branch TEXT DEFAULT 'main',
+      project_type TEXT,
+      image_tag TEXT,
+      url TEXT,
+      port INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      logs TEXT,
+      metadata TEXT,
+      env_vars TEXT,
+      domain TEXT
+    )
+  `);
+});
 
 app.use(cors());
 app.use(express.json());
 
 const clients = new Map();
 
-const addLog = (deploymentId: string, message: string, level: 'info' | 'error' | 'warn' | 'success' = 'info') => {
-  const row = db.prepare('SELECT logs FROM deployments WHERE id = ?').get(deploymentId) as any;
+// Helper function to run database queries with promises
+function dbGet(sql: string, params: any[] = []): Promise<any> {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, result) => {
+      if (err) reject(err);
+      else resolve(result);
+    });
+  });
+}
+
+function dbRun(sql: string, params: any[] = []): Promise<void> {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function dbAll(sql: string, params: any[] = []): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+const addLog = async (deploymentId: string, message: string, level: 'info' | 'error' | 'warn' | 'success' = 'info') => {
+  const row = await dbGet('SELECT logs FROM deployments WHERE id = ?', [deploymentId]);
   const logs = row?.logs ? JSON.parse(row.logs) : [];
   logs.push({ timestamp: new Date().toISOString(), level, message });
-  db.prepare('UPDATE deployments SET logs = ?, updated_at = ? WHERE id = ?').run(
+  await dbRun('UPDATE deployments SET logs = ?, updated_at = ? WHERE id = ?', [
     JSON.stringify(logs),
     new Date().toISOString(),
     deploymentId
-  );
+  ]);
   const client = clients.get(deploymentId);
-  if (client) client.write(`data: ${JSON.stringify({ message, level })}\n\n`);
+  if (client) {
+    client.write(`data: ${JSON.stringify({ message, level })}\n\n`);
+  }
 };
 
-const updateStatus = (deploymentId: string, status: string, imageTag?: string, url?: string, port?: number, projectType?: string) => {
-  db.prepare(`UPDATE deployments SET status = ?, updated_at = ?, image_tag = COALESCE(?, image_tag), url = COALESCE(?, url), port = COALESCE(?, port), project_type = COALESCE(?, project_type) WHERE id = ?`)
-    .run(status, new Date().toISOString(), imageTag || null, url || null, port || null, projectType || null, deploymentId);
+const updateStatus = async (deploymentId: string, status: string, imageTag?: string, url?: string, port?: number, projectType?: string) => {
+  await dbRun(
+    `UPDATE deployments SET status = ?, updated_at = ?, image_tag = COALESCE(?, image_tag), url = COALESCE(?, url), port = COALESCE(?, port), project_type = COALESCE(?, project_type) WHERE id = ?`,
+    [status, new Date().toISOString(), imageTag || null, url || null, port || null, projectType || null, deploymentId]
+  );
 };
 
 async function cloneRepo(gitUrl: string, targetPath: string, onLog: (msg: string) => void): Promise<void> {
@@ -146,30 +185,30 @@ async function detectProjectType(projectPath: string, onLog: (msg: string) => vo
 
 async function startDeployment(id: string, gitUrl: string) {
   try {
-    updateStatus(id, 'building');
-    addLog(id, '🚀 Starting deployment pipeline...', 'info');
+    await updateStatus(id, 'building');
+    await addLog(id, '🚀 Starting deployment pipeline...', 'info');
     
     const projectPath = path.join('/tmp', `deploy-${id}`);
     await cloneRepo(gitUrl, projectPath, (msg) => addLog(id, msg, 'info'));
     
     const config = await detectProjectType(projectPath, (msg) => addLog(id, msg, 'info'));
-    updateStatus(id, 'building', undefined, undefined, undefined, config.type);
-    addLog(id, `🎯 Detected: ${config.type.toUpperCase()} on port ${config.port}`, 'success');
+    await updateStatus(id, 'building', undefined, undefined, undefined, config.type);
+    await addLog(id, `🎯 Detected: ${config.type.toUpperCase()} on port ${config.port}`, 'success');
     
     let buildContext = projectPath;
     if (fs.existsSync(path.join(projectPath, 'backend'))) {
       buildContext = path.join(projectPath, 'backend');
-      addLog(id, '📁 Using backend folder', 'info');
+      await addLog(id, '📁 Using backend folder', 'info');
     }
     
     const dockerfilePath = path.join(buildContext, 'Dockerfile');
     if (!fs.existsSync(dockerfilePath) && config.dockerfile) {
       fs.writeFileSync(dockerfilePath, config.dockerfile);
-      addLog(id, '✅ Created Dockerfile', 'success');
+      await addLog(id, '✅ Created Dockerfile', 'success');
     }
     
     const imageTag = `deploy-${id}:${Date.now()}`;
-    addLog(id, `🔨 Building Docker image: ${imageTag}`, 'info');
+    await addLog(id, `🔨 Building Docker image: ${imageTag}`, 'info');
     
     const buildStream = await docker.buildImage(
       { context: buildContext, src: ['.'] },
@@ -186,9 +225,9 @@ async function startDeployment(id: string, gitUrl: string) {
       });
     });
     
-    addLog(id, '✅ Image built', 'success');
-    updateStatus(id, 'deploying');
-    addLog(id, '🐳 Starting container...', 'info');
+    await addLog(id, '✅ Image built', 'success');
+    await updateStatus(id, 'deploying');
+    await addLog(id, '🐳 Starting container...', 'info');
     
     const containerName = `deploy-${id}`;
     try { await docker.getContainer(containerName).remove({ force: true }); } catch(e) {}
@@ -209,14 +248,14 @@ async function startDeployment(id: string, gitUrl: string) {
     const hostPort = inspect.NetworkSettings.Ports[`${config.port}/tcp`]?.[0]?.HostPort;
     const url = `http://localhost:${hostPort}`;
     
-    updateStatus(id, 'running', imageTag, url, parseInt(hostPort));
-    addLog(id, `✅ DEPLOYMENT SUCCESSFUL!`, 'success');
-    addLog(id, `🌐 App running at: ${url}`, 'success');
+    await updateStatus(id, 'running', imageTag, url, parseInt(hostPort));
+    await addLog(id, `✅ DEPLOYMENT SUCCESSFUL!`, 'success');
+    await addLog(id, `🌐 App running at: ${url}`, 'success');
     
     if (fs.existsSync(projectPath)) fs.rmSync(projectPath, { recursive: true, force: true });
   } catch (error: any) {
-    updateStatus(id, 'failed');
-    addLog(id, `❌ Failed: ${error.message}`, 'error');
+    await updateStatus(id, 'failed');
+    await addLog(id, `❌ Failed: ${error.message}`, 'error');
   }
 }
 
@@ -228,8 +267,10 @@ app.post('/api/deployments', async (req, res) => {
     
     const id = uuidv4();
     const now = new Date().toISOString();
-    db.prepare(`INSERT INTO deployments (id, status, git_url, branch, created_at, updated_at, logs) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, 'pending', gitUrl, branch, now, now, JSON.stringify([]));
+    await dbRun(
+      `INSERT INTO deployments (id, status, git_url, branch, created_at, updated_at, logs) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, 'pending', gitUrl, branch, now, now, JSON.stringify([])]
+    );
     
     res.json({ id, status: 'pending', message: 'Deployment started' });
     startDeployment(id, gitUrl);
@@ -238,25 +279,26 @@ app.post('/api/deployments', async (req, res) => {
   }
 });
 
-app.get('/api/deployments', (req, res) => {
+app.get('/api/deployments', async (req, res) => {
   try {
-    const deployments = db.prepare('SELECT * FROM deployments ORDER BY created_at DESC').all();
+    const deployments = await dbAll('SELECT * FROM deployments ORDER BY created_at DESC');
     res.json(deployments);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch deployments' });
   }
 });
 
-app.get('/api/deployments/:id/logs', (req, res) => {
+app.get('/api/deployments/:id/logs', async (req, res) => {
   const { id } = req.params;
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*'
   });
   clients.set(id, res);
   
-  const row = db.prepare('SELECT logs FROM deployments WHERE id = ?').get(id) as any;
+  const row = await dbGet('SELECT logs FROM deployments WHERE id = ?', [id]);
   if (row?.logs) {
     const logs = JSON.parse(row.logs);
     logs.forEach((log: any) => {
@@ -267,9 +309,9 @@ app.get('/api/deployments/:id/logs', (req, res) => {
   req.on('close', () => clients.delete(id));
 });
 
-app.get('/health', (req, res) => res.json({ status: 'healthy' }));
+app.get('/health', (req, res) => res.json({ status: 'healthy', timestamp: new Date().toISOString() }));
 
-// Catch-all to serve React frontend
+// Catch-all to serve React frontend (must be after API routes)
 app.get('*', (req, res) => {
   const indexPath = path.join(frontendPath, 'index.html');
   if (fs.existsSync(indexPath)) {
@@ -283,4 +325,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📡 API at /api/deployments`);
   console.log(`🎨 Frontend served at /`);
+  console.log(`📁 Frontend path: ${frontendPath}`);
 });
+
+export default app;
