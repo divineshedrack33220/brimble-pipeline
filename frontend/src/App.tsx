@@ -14,7 +14,12 @@ import {
   RefreshCw
 } from 'lucide-react'
 
-const API = axios.create({ baseURL: 'http://localhost:3000/api' })
+// Fix: Use the correct API URL based on environment
+const API_BASE_URL = import.meta.env.PROD 
+  ? 'https://brimble-pipeline.onrender.com/api'
+  : 'http://localhost:3000/api';
+
+const API = axios.create({ baseURL: API_BASE_URL })
 
 interface Deployment {
   id: string
@@ -66,7 +71,11 @@ function App() {
   useEffect(() => {
     if (!selectedDeployment) return
     
-    const eventSource = new EventSource(`http://localhost:3000/api/deployments/${selectedDeployment}/logs`)
+    const eventSourceUrl = import.meta.env.PROD
+      ? `https://brimble-pipeline.onrender.com/api/deployments/${selectedDeployment}/logs`
+      : `http://localhost:3000/api/deployments/${selectedDeployment}/logs`;
+    
+    const eventSource = new EventSource(eventSourceUrl)
     
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data)
