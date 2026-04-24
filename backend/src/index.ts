@@ -11,86 +11,82 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const docker = new Docker();
 
-// Serve static frontend files from dist folder
-const frontendPath = path.join(__dirname, '../../frontend/dist');
-console.log(`Frontend path: ${frontendPath}`);
-console.log(`Frontend exists: ${fs.existsSync(frontendPath)}`);
-
-if (fs.existsSync(frontendPath)) {
-  // Serve assets folder first (CSS, JS files)
-  app.use('/assets', express.static(path.join(frontendPath, 'assets')));
-  // Serve other static files
-  app.use(express.static(frontendPath));
-  console.log(`✅ Serving frontend from: ${frontendPath}`);
-}
-
+// Ensure data directory exists
 const dataDir = path.join(process.cwd(), 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+// Initialize SQLite database
 const db = new sqlite3.Database(path.join(dataDir, 'deployments.db'));
 
-// Initialize database tables
+// Create tables
 db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS deployments (
-      id TEXT PRIMARY KEY,
-      status TEXT NOT NULL,
-      git_url TEXT NOT NULL,
-      branch TEXT DEFAULT 'main',
-      project_type TEXT,
-      image_tag TEXT,
-      url TEXT,
-      port INTEGER,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      logs TEXT,
-      metadata TEXT,
-      env_vars TEXT,
-      domain TEXT
-    )
-  `);
+  db.run(`CREATE TABLE IF NOT EXISTS deployments (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    git_url TEXT NOT NULL,
+    branch TEXT DEFAULT 'main',
+    project_type TEXT,
+    image_tag TEXT,
+    url TEXT,
+    port INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    logs TEXT
+  )`);
 });
 
-app.use(cors());
-app.use(express.json());
-
-const clients = new Map();
-
-// Helper function to run database queries with promises
-function dbGet(sql: string, params: any[] = []): Promise<any> {
+// Promise wrappers for SQLite
+const dbGet = (sql: string, params: any[] = []): Promise<any> => {
   return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, result) => {
+    db.get(sql, params, (err, row) => {
       if (err) reject(err);
-      else resolve(result);
+      else resolve(row);
     });
   });
-}
+};
 
-function dbRun(sql: string, params: any[] = []): Promise<void> {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function(err) {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
-}
-
-function dbAll(sql: string, params: any[] = []): Promise<any[]> {
+const dbAll = (sql: string, params: any[] = []): Promise<any[]> => {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
       if (err) reject(err);
       else resolve(rows);
     });
   });
+};
+
+const dbRun = (sql: string, params: any[] = []): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+};
+
+// Serve frontend static files
+const frontendPath = path.join(__dirname, '../../frontend/dist');
+console.log(`📁 Frontend path: ${frontendPath}`);
+console.log(`📁 Frontend exists: ${fs.existsSync(frontendPath)}`);
+
+if (fs.existsSync(frontendPath)) {
+  app.use('/assets', express.static(path.join(frontendPath, 'assets')));
+  app.use(express.static(frontendPath));
+  console.log(`✅ Serving frontend from: ${frontendPath}`);
 }
 
-const addLog = async (deploymentId: string, message: string, level: 'info' | 'error' | 'warn' | 'success' = 'info') => {
+app.use(cors());
+app.use(express.json());
+
+// SSE clients
+const clients = new Map();
+
+// Helper functions
+const addLog = async (deploymentId: string, message: string, level: string = 'info') => {
   const row = await dbGet('SELECT logs FROM deployments WHERE id = ?', [deploymentId]);
   const logs = row?.logs ? JSON.parse(row.logs) : [];
   logs.push({ timestamp: new Date().toISOString(), level, message });
@@ -99,19 +95,21 @@ const addLog = async (deploymentId: string, message: string, level: 'info' | 'er
     new Date().toISOString(),
     deploymentId
   ]);
+  
   const client = clients.get(deploymentId);
   if (client) {
     client.write(`data: ${JSON.stringify({ message, level })}\n\n`);
   }
 };
 
-const updateStatus = async (deploymentId: string, status: string, imageTag?: string, url?: string, port?: number, projectType?: string) => {
+const updateStatus = async (deploymentId: string, status: string, imageTag?: string, url?: string) => {
   await dbRun(
-    `UPDATE deployments SET status = ?, updated_at = ?, image_tag = COALESCE(?, image_tag), url = COALESCE(?, url), port = COALESCE(?, port), project_type = COALESCE(?, project_type) WHERE id = ?`,
-    [status, new Date().toISOString(), imageTag || null, url || null, port || null, projectType || null, deploymentId]
+    'UPDATE deployments SET status = ?, updated_at = ?, image_tag = ?, url = ? WHERE id = ?',
+    [status, new Date().toISOString(), imageTag || null, url || null, deploymentId]
   );
 };
 
+// Clone repository
 async function cloneRepo(gitUrl: string, targetPath: string, onLog: (msg: string) => void): Promise<void> {
   onLog(`🔗 Cloning repository: ${gitUrl}`);
   const { stdout, stderr } = await execAsync(`git clone --depth 1 ${gitUrl} ${targetPath}`);
@@ -120,15 +118,17 @@ async function cloneRepo(gitUrl: string, targetPath: string, onLog: (msg: string
   onLog('✅ Repository cloned successfully');
 }
 
+// Detect project type
 async function detectProjectType(projectPath: string, onLog: (msg: string) => void): Promise<any> {
   const files = fs.readdirSync(projectPath);
   
+  // Dockerfile
   if (fs.existsSync(path.join(projectPath, 'Dockerfile'))) {
     onLog('🐳 Found existing Dockerfile');
     return { type: 'docker', port: 8080, dockerfile: '', envVars: [] };
   }
   
-  // Check for static site
+  // Static site
   const hasHtml = files.some(f => f.endsWith('.html'));
   if (hasHtml && !fs.existsSync(path.join(projectPath, 'package.json'))) {
     onLog('🌐 Detected static website');
@@ -151,30 +151,8 @@ async function detectProjectType(projectPath: string, onLog: (msg: string) => vo
     };
   }
   
-  // Python
-  if (fs.existsSync(path.join(projectPath, 'requirements.txt'))) {
-    onLog('🐍 Detected Python project');
-    return {
-      type: 'python',
-      port: 5000,
-      dockerfile: `FROM python:3.11-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\nCOPY . .\nEXPOSE 5000\nCMD ["python", "app.py"]`,
-      envVars: ['PYTHONUNBUFFERED=1']
-    };
-  }
-  
-  // Go
-  if (fs.existsSync(path.join(projectPath, 'go.mod'))) {
-    onLog('🔷 Detected Go project');
-    return {
-      type: 'go',
-      port: 8080,
-      dockerfile: `FROM golang:1.21-alpine AS builder\nWORKDIR /app\nCOPY go.mod ./\nRUN go mod download\nCOPY . .\nRUN go build -o app\nFROM alpine:latest\nCOPY --from=builder /app/app .\nEXPOSE 8080\nCMD ["./app"]`,
-      envVars: []
-    };
-  }
-  
-  // Default fallback
-  onLog('❓ Unknown project type');
+  // Fallback
+  onLog('❓ Unknown project type, using generic fallback');
   return {
     type: 'unknown',
     port: 3000,
@@ -183,6 +161,7 @@ async function detectProjectType(projectPath: string, onLog: (msg: string) => vo
   };
 }
 
+// Deployment pipeline
 async function startDeployment(id: string, gitUrl: string) {
   try {
     await updateStatus(id, 'building');
@@ -192,7 +171,7 @@ async function startDeployment(id: string, gitUrl: string) {
     await cloneRepo(gitUrl, projectPath, (msg) => addLog(id, msg, 'info'));
     
     const config = await detectProjectType(projectPath, (msg) => addLog(id, msg, 'info'));
-    await updateStatus(id, 'building', undefined, undefined, undefined, config.type);
+    await updateStatus(id, 'building');
     await addLog(id, `🎯 Detected: ${config.type.toUpperCase()} on port ${config.port}`, 'success');
     
     let buildContext = projectPath;
@@ -248,7 +227,7 @@ async function startDeployment(id: string, gitUrl: string) {
     const hostPort = inspect.NetworkSettings.Ports[`${config.port}/tcp`]?.[0]?.HostPort;
     const url = `http://localhost:${hostPort}`;
     
-    await updateStatus(id, 'running', imageTag, url, parseInt(hostPort));
+    await updateStatus(id, 'running', imageTag, url);
     await addLog(id, `✅ DEPLOYMENT SUCCESSFUL!`, 'success');
     await addLog(id, `🌐 App running at: ${url}`, 'success');
     
@@ -311,13 +290,13 @@ app.get('/api/deployments/:id/logs', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'healthy', timestamp: new Date().toISOString() }));
 
-// Catch-all to serve React frontend (must be after API routes)
+// Serve React app for all other routes
 app.get('*', (req, res) => {
   const indexPath = path.join(frontendPath, 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.status(404).json({ error: 'Frontend not built. Run npm run build in frontend folder first.' });
+    res.status(404).json({ error: 'Frontend not found' });
   }
 });
 
@@ -327,5 +306,3 @@ app.listen(PORT, () => {
   console.log(`🎨 Frontend served at /`);
   console.log(`📁 Frontend path: ${frontendPath}`);
 });
-
-export default app;
