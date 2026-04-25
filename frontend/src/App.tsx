@@ -17,8 +17,7 @@ import {
 // Fix: Use the correct API URL based on environment
 const API_BASE_URL = import.meta.env.PROD 
   ? 'https://brimble-pipeline.onrender.com/api'
-  : 'http://localhost:3000/api';
-
+ 
 const API = axios.create({ baseURL: API_BASE_URL })
 
 interface Deployment {
