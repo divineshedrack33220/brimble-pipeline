@@ -14,12 +14,8 @@ import {
   RefreshCw
 } from 'lucide-react'
 
-// Fix: Use the correct API URL based on environment
-const API_BASE_URL = import.meta.env.PROD 
-  ? 'https://brimble-pipeline.onrender.com/api'
-  : 'https://brimble-pipeline.onrender.com/api';
-
-const API = axios.create({ baseURL: API_BASE_URL })
+// HARDCODED for Render deployment
+const API = axios.create({ baseURL: 'https://brimble-backend.onrender.com/api' })
 
 interface Deployment {
   id: string
@@ -71,11 +67,8 @@ function App() {
   useEffect(() => {
     if (!selectedDeployment) return
     
-    const eventSourceUrl = import.meta.env.PROD
-      ? `https://brimble-pipeline.onrender.com/api/deployments/${selectedDeployment}/logs`
-      : `http://localhost:3000/api/deployments/${selectedDeployment}/logs`;
-    
-    const eventSource = new EventSource(eventSourceUrl)
+    // HARDCODED URL
+    const eventSource = new EventSource(`https://brimble-backend.onrender.com/api/deployments/${selectedDeployment}/logs`)
     
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data)
@@ -114,7 +107,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
-      {/* Header */}
       <header className="border-b border-gray-700 bg-gray-900/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
@@ -140,7 +132,6 @@ function App() {
       </header>
 
       <div className="container mx-auto px-6 py-8">
-        {/* Deploy Form */}
         <div className="bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700 p-6 mb-8">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
             <Rocket className="w-5 h-5 text-purple-400" />
@@ -195,7 +186,6 @@ function App() {
           </div>
         </div>
 
-        {/* Deployments List */}
         <div>
           <h2 className="text-xl font-semibold mb-4">Deployments</h2>
           {isLoading ? (
@@ -264,7 +254,6 @@ function App() {
           )}
         </div>
 
-        {/* Logs Drawer */}
         {selectedDeployment && (
           <div className="fixed inset-y-0 right-0 w-full md:w-2/3 lg:w-1/2 bg-gray-900 border-l border-gray-700 shadow-xl z-50 flex flex-col">
             <div className="flex items-center justify-between p-4 border-b border-gray-700 bg-gray-800/50">
