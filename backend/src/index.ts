@@ -79,7 +79,11 @@ if (fs.existsSync(frontendPath)) {
   console.log(`✅ Serving frontend from: ${frontendPath}`);
 }
 
-app.use(cors());
+// UPDATE THIS SECTION - Add proper CORS
+app.use(cors({
+  origin: ['https://brimble-pipeline.onrender.com', 'http://localhost:5173', 'http://localhost:3000'],
+  credentials: true
+}));
 app.use(express.json());
 
 // SSE clients
