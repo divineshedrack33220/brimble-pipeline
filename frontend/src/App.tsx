@@ -14,8 +14,8 @@ import {
   RefreshCw
 } from 'lucide-react'
 
-// HARDCODED for Render deployment
-const API = axios.create({ baseURL: 'https://brimble-backend.onrender.com/api' })
+// Use relative path - works both locally and on Render
+const API = axios.create({ baseURL: '/api' })
 
 interface Deployment {
   id: string
@@ -24,7 +24,6 @@ interface Deployment {
   image_tag: string
   url: string
   created_at: string
-  logs?: string
 }
 
 function App() {
@@ -67,8 +66,7 @@ function App() {
   useEffect(() => {
     if (!selectedDeployment) return
     
-    // HARDCODED URL
-    const eventSource = new EventSource(`https://brimble-backend.onrender.com/api/deployments/${selectedDeployment}/logs`)
+    const eventSource = new EventSource(`/api/deployments/${selectedDeployment}/logs`)
     
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data)
