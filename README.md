@@ -111,6 +111,7 @@ text
                               │   - Static Sites            │
                               │   - Python/Go/Rust/etc.     │
                               └─────────────────────────────┘
+
 📁 Project Structure
 text
 brimble-pipeline/
@@ -141,7 +142,7 @@ DELETE	/api/deployments/:id	Delete deployment
 GET	/api/stats	Deployment statistics
 GET	/health	Health check
 📊 Deployment Flow
-text
+```
 1. Submit Git URL
    │
    ▼
@@ -169,22 +170,23 @@ text
 9. Deployment Complete ✓
 🎯 Example Deployments
 Deploy a Node.js App
-text
+
 https://github.com/heroku/node-js-getting-started.git
 Deploy a Static Website
-text
+
 https://github.com/divineshedrack33220/vault.git
 Deploy a Python App
-text
+
 https://github.com/python-poetry/poetry.git
 Deploy with Custom Dockerfile
-text
+
 https://github.com/yourusername/your-repo.git (with Dockerfile)
 🚢 Deployment Options
 Local Development (Docker Compose)
 bash
 docker compose up --build
 Render (Limited - No Docker Socket)
+
 yaml
 # render.yaml
 services:
